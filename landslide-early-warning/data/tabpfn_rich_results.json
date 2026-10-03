@@ -1,0 +1,1 @@
+{"precision": 0.37037037037037035, "recall": 0.30303030303030304, "f1": 0.3333333333333333, "roc_auc": 0.7335517335517335, "threshold": 0.04, "flagged": 27, "oof_train_auc": 0.45237452374523746, "features": ["rain_today", "lag1", "lag3", "lag5", "lag7", "lag10", "lag14", "rain_3d", "api_0.9", "api_0.7", "soil_0_7cm", "month"]}

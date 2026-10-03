@@ -1,0 +1,4 @@
+model,precision,recall,f1,roc_auc
+Baseline rain_3d > 183 mm (X tuned on TRAIN),0.308,0.121,0.174,0.752
+"Baseline rain_3d > 77 mm (X tuned on TEST, optimistic)",0.273,0.364,0.312,0.752
+"TabPFN v2 (thr 0.07, LOSO on train)",0.6,0.091,0.158,0.648

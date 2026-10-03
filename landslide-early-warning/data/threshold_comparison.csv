@@ -1,0 +1,7 @@
+method,precision,recall,f1,roc_auc,param
+rain_3d > 77 mm (picked on TEST years; optimistic),0.273,0.364,0.312,0.752,77.0
+"rain_3d, threshold tuned on train",0.25,0.091,0.133,0.752,186.0
+"I-D as published (19.37 D^-0.6215, D 48-308 h)",0.175,0.545,0.265,0.671,1.0
+"I-D, scale tuned on train",0.348,0.242,0.286,0.671,2.4
+"API 10-day, k=0.9, 77 mm (as quoted; k assumed)",0.144,0.606,0.233,0.721,77.0
+"API 10-day, k=0.7, threshold tuned on train",0.417,0.152,0.222,0.757,160.0
