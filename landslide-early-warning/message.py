@@ -1,5 +1,6 @@
 import json
 import re
+import datetime as dt
 import requests
 
 OLLAMA = "http://localhost:11434"
@@ -60,24 +61,60 @@ def template_message(district: str, risks: list[dict]) -> dict:
 BANNED_EN = ("chance", "probab", "likelihood")  # the percentage is not a landslide probability
 
 
-def _valid(en: str, calm: bool = False) -> bool:
-    """English only: word limit, exact disclaimer, no stray labels, and no wording that turns the scenario share into a landslide chance."""
+def summary_sentence(risks: list[dict]) -> str:
+    """The exact sentence the English message must contain. Built from the same numbers the app displays."""
+    parts = [f"{dt.date.fromisoformat(r['date']).strftime('%b')} {int(r['date'][8:])} {r['pct']}%" for r in risks]
+    return "Forecast rain scenarios crossing the landslide-linked rain level: " + ", ".join(parts) + "."
+
+
+def _allowed_numbers(risks: list[dict]) -> set[str]:
+    ok = {"3", "1000"}
+    for r in risks:
+        y, mth, d = r["date"].split("-")  # date components are in the data, in padded and unpadded form
+        ok.update({y, mth, str(int(mth)), d, str(int(d))})
+        mm = f"{r['central_rain_mm']:.1f}"
+        ok.update({mm, mm.rstrip("0").rstrip("."), str(int(round(r["central_rain_mm"])))})
+    return ok
+
+
+TOKEN = re.compile(r"\b([A-Z][a-z]{2}) (\d{1,2}) (\d{1,3})%")
+SENTENCE = re.compile(r"[^.]*crossing the landslide-linked rain level:[^.]*\.")
+
+
+def _valid(en: str, risks: list[dict]) -> bool:
+    """Word limit, exact disclaimer, and the risk percentages must be exactly the ones the app shows, token by token:
+    the same (month, day, percent) entries in the same order, no other percentage anywhere, the key phrase present, and
+    nothing outside that sentence may restate the scenarios, use a number that is not in the data, or invert the share."""
+    calm = all(r["pct"] < 50 for r in risks)
     if not en or _words(en) >= MAX_WORDS:  # strictly under 60
         return False
     if not en.endswith(DISCLAIMER_EN) or "EN:" in en or "NE:" in en:
         return False
-    if calm and any(w in en.lower() for w in ("instabil", "landslide risk is high", "danger", "alert")):
-        return False  # every scenario share is under 50%: do not imply danger
-    if calm and re.search(r"heavy rain(fall)?( is| are| will be)? (expected|forecast|likely|predicted)|heavy rain(fall)? on", en.lower()):
-        return False  # a calm forecast must not announce heavy rain (seen: "Heavy rain is expected on Oct 6 (2.0mm)")
-    return not any(w in en.lower() for w in BANNED_EN)
+    expected = [(dt.date.fromisoformat(r["date"]).strftime("%b"), str(int(r["date"][8:])), str(r["pct"])) for r in risks]
+    if TOKEN.findall(en) != expected or en.count("%") != len(expected):
+        return False
+    sent = SENTENCE.search(en)
+    if not sent or TOKEN.findall(sent.group(0)) != expected:
+        return False
+    rest = en.replace(sent.group(0), " ").replace(DISCLAIMER_EN, " ")
+    low = rest.lower()
+    if "%" in rest or "percent" in low or "scenario" in low or any(w in low for w in BANNED_EN):
+        return False
+    if any(n not in _allowed_numbers(risks) for n in re.findall(r"\d+(?:\.\d+)?", rest)):
+        return False
+    if re.search(r"\bbelow\b(?! (road )?cuttings)|\bunder\b|\bless than\b|\bfewer\b|\bapproximately\b|\bhalf\b", low):
+        return False  # words used to invert or fudge the scenario share (seen: "50% ... are below the rainfall levels")
+    if calm and any(w in low for w in ("instabil", "landslide risk is high", "danger", "alert")):
+        return False
+    if calm and re.search(r"heavy rain(fall)?( is| are| will be)? (expected|forecast|likely|predicted)|heavy rain(fall)? on", low):
+        return False
+    return True
 
 
 def make_message(district: str, risks: list[dict]) -> dict:
     """Return {en, ne, source, ne_source, note}.
-    English: written by Gemma through Ollama and checked by _valid. Nepali: always the fixed template (Gemma's Nepali was
-    unreliable in testing). If Ollama is down or Gemma fails the checks, English falls back to the template too and `note`
-    explains. Never raises for Ollama being down."""
+    English: written by Gemma through Ollama and accepted only if _valid passes (its percentages match the app exactly).
+    Nepali: always the fixed template. If Ollama is down or Gemma fails the checks 3 times, English is the template too."""
     base = template_message(district, risks)
     base["ne_source"] = "fixed template"
     try:
@@ -86,32 +123,34 @@ def make_message(district: str, risks: list[dict]) -> dict:
         base["note"] = str(e)
         return base
 
-    facts = "\n".join(
-        f"- {r['date']}: {r['pct']}% of {r['n']:,} forecast rain scenarios cross the rainfall level linked to past landslides "
-        f"(central forecast rain that day {r['central_rain_mm']} mm)" for r in risks)
+    s = summary_sentence(risks)
+    calm = all(r["pct"] < 50 for r in risks)
+    daily = "\n".join(f"- {r['date']}: central forecast rain {r['central_rain_mm']} mm" for r in risks)
     prompt = (
-        f"Write a short English message for people living in {district}, Nepal, about landslide risk for the next 3 days, "
-        f"to be forwarded on Viber/WhatsApp.\nForecast risk:\n{facts}\n\n"
-        f"Rules: plain words, calm tone, no greeting, no fear language, do not say a landslide WILL happen. "
-        f"Treat 50% or more of scenarios as higher risk. If every day is under 50%, say clearly that risk looks lower and do NOT mention "
-        f"instability, danger or alerts; you may say heavy rain can still change this. The percentage is the share of forecast rain "
-        f"scenarios that cross a rain level linked to past landslides. It is NOT the chance, probability or likelihood of a landslide: "
-        f"never describe it that way. If risk is higher, say what to do (avoid steep slopes, stream crossings, roads below cuttings). "
-        f"The message MUST be under {MAX_WORDS - 5} words and end with exactly: {DISCLAIMER_EN} "
-        f"Do not write labels like EN: inside the message.\n"
+        f"You write a short English message for people in {district}, Nepal, about landslide risk in the next 3 days, for Viber/WhatsApp.\n"
+        f"The risk numbers are FIXED and already written for you in this sentence:\n\"{s}\"\n"
+        f"Copy that sentence into your message CHARACTER FOR CHARACTER, every word and every percentage, dropping nothing. Do not change, round, reorder, "
+        f"explain or add to any number. Do not write any other percentage and do not use the words scenario, scenarios, chance, "
+        f"probability or likelihood anywhere else. A higher percentage means more risk, 0% means no scenario crosses the level.\n"
+        f"Rain data:\n{daily}\n"
+        + ("All percentages are under 50%, so say plainly that risk looks lower. Do not mention instability, danger or alerts, and do not "
+           "say heavy rain is expected; you may say heavy rain can still change this.\n" if calm else
+           "Percentages of 50% or more mean higher risk: say which days, and say to avoid steep slopes, stream crossings and roads below cuttings.\n")
+        + f"Plain calm words, no greeting, never say a landslide WILL happen. The whole message must be under {MAX_WORDS - 8} words "
+        f"and end with exactly: {DISCLAIMER_EN}\n"
         f'Reply with JSON only: {{"en": "..."}}'
     )
     for _ in range(3):
         try:
             r = requests.post(f"{OLLAMA}/api/generate", json={
                 "model": model, "prompt": prompt, "stream": False, "format": "json",
-                "options": {"temperature": 0.3, "num_ctx": 2048}}, timeout=120)
+                "options": {"temperature": 0.2, "num_ctx": 2048}}, timeout=120)
             r.raise_for_status()
             en = str(json.loads(r.json()["response"])["en"]).strip()
         except (requests.RequestException, KeyError, ValueError):
             continue
-        if _valid(en, calm=all(x["pct"] < 50 for x in risks)):
+        if _valid(en, risks):
             return {**base, "en": en, "source": f"gemma ({model})"}
-    base["note"] = ("Gemma did not return an English message that passed the checks (word limit, exact disclaimer, no probability "
-                    "wording) after 3 tries; showing the fixed template.")
+    base["note"] = ("Gemma did not return an English message that passed the checks (its percentages must match the app exactly; "
+                    "word limit; exact disclaimer) after 3 tries; showing the fixed template.")
     return base
